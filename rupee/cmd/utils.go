@@ -21,6 +21,7 @@ const (
 	rke2Local      = "./charts"
 )
 
+// TODO: Look up for required binaries
 // pathToDiffCmd, err := exec.LookPath("diff")
 // if err != nil {
 // 	return false, fmt.Errorf("Cannot generate patch file if GNU diff is not available")
@@ -78,7 +79,37 @@ func listCharts(localDir string) ([]string, error) {
 	return results, nil
 }
 
-func getVersionsFor(localDir, chartName string) (map[string]string, error) {
+type source struct {
+	file, match string
+	parse       func(*Version, *Version, map[string]*Version)
+}
+
+func newLine(source, content string, line, col int) *Version {
+	return &Version{
+		Value:  content,
+		source: source,
+		line:   line,
+		col:    col,
+	}
+}
+
+type Version struct {
+	Value  string
+	source string
+	line   int
+	col    int
+}
+
+func (l Version) String() string {
+	return l.Value
+}
+
+func (l Version) MarshalJSON() ([]byte, error) {
+	return json.Marshal(l.Value)
+}
+
+// find "./charts/packages/$PACKAGE" ! -name '*json*' ! -name '*.patch' -type f -exec grep -E '^\+?\s*(version|tag|appVersion|packageVersion|repository)\s*:\s*.\w+' {} \;
+func getVersionsFor(localDir, chartName string) (map[string]*Version, error) {
 	if localDir == "" {
 		localDir = rke2Local
 	}
@@ -88,34 +119,45 @@ func getVersionsFor(localDir, chartName string) (map[string]string, error) {
 		return nil, err
 	}
 
-	// find "./charts/packages/$PACKAGE" ! -name '*json*' ! -name '*.patch' -type f -exec grep -E '^\+?\s*(version|tag|appVersion|packageVersion|repository)\s*:\s*.\w+' {} \;
-	type foo struct {
-		file, targetRegexp string
-		behavior           func(string, string, map[string]string)
-	}
+	pkg := source{
+		file:  "package.yaml",
+		match: "^\\s*(url|packageVersion)\\s*:",
+		parse: func(current, _ *Version, versions map[string]*Version) {
+			line := current.Value
 
-	pkg := foo{
-		file:         "package.yaml",
-		targetRegexp: "url|packageVersion",
-	}
+			i := strings.Index(line, ":") + 1
 
-	chart := foo{
-		file:         "Chart.yaml",
-		targetRegexp: "^\\s*(version|appVersion)",
-	}
+			if strings.Contains(line[i:], "local") {
+				return
+			}
 
-	values := foo{
-		file:         "values.yaml",
-		targetRegexp: "tag",
-		behavior: func(tag, repository string, versions map[string]string) {
-			c := strings.Index(tag, ":") + 1
-			l := strings.Index(repository, ":") + 1
-			versions[strings.TrimSpace(repository[l:])] = strings.TrimSpace(tag[c:])
+			r := regexp.MustCompile(`v?\d+(\.\d+)*`)
+			current.Value = r.FindString(line)
+
+			versions[strings.TrimSpace(line[0:i])] = current
 		},
 	}
 
-	alist := []foo{pkg, chart, values}
-	versions := make(map[string]string)
+	chart := source{
+		file:  "Chart.yaml",
+		match: "^\\s*(version|appVersion)\\s*:",
+	}
+
+	values := source{
+		file:  "values.yaml",
+		match: "^\\s*tag\\s*:",
+		parse: func(tag, repository *Version, versions map[string]*Version) {
+
+			c := strings.Index(tag.Value, ":") + 1
+			l := strings.Index(repository.Value, ":") + 1
+			tag.Value = strings.TrimSpace(tag.Value[c:])
+
+			versions[strings.TrimSpace(repository.Value[l:])] = tag
+		},
+	}
+
+	alist := []source{pkg, chart, values}
+	versions := make(map[string]*Version)
 
 	filepath.Walk(chartPath, func(path string, info fs.FileInfo, err error) error {
 		if info.IsDir() && strings.Contains(path, "generated") {
@@ -128,7 +170,7 @@ func getVersionsFor(localDir, chartName string) (map[string]string, error) {
 
 		for _, v := range alist {
 			if strings.Contains(path, v.file) {
-				scanVersions(path, v.targetRegexp, v.behavior, versions)
+				scanVersions(path, v.match, v.parse, versions)
 			}
 		}
 
@@ -138,9 +180,7 @@ func getVersionsFor(localDir, chartName string) (map[string]string, error) {
 	return versions, nil
 }
 
-// var versionNotFound = errors.New("version metadata not found")
-
-func scanVersions(path, versionPattern string, b func(string, string, map[string]string), versions map[string]string) (map[string]string, error) {
+func scanVersions(path, versionPattern string, p func(*Version, *Version, map[string]*Version), versions map[string]*Version) (map[string]*Version, error) {
 
 	file, err := os.Open(path)
 	if err != nil {
@@ -155,35 +195,40 @@ func scanVersions(path, versionPattern string, b func(string, string, map[string
 	scanner := bufio.NewScanner(file)
 
 	var lineNumber int
-	var last string
+	var last *Version
 	for scanner.Scan() {
 		lineNumber++
 
-		line := scanner.Text()
+		t := scanner.Text()
+		l := newLine(path, t, lineNumber, 0)
 
-		if !matcher.MatchString(line) {
-			last = line
+		if !matcher.MatchString(t) {
+			last = l
 			continue
 		}
 
-		if b != nil {
-			b(line, last, versions)
-			last = line
+		if p != nil {
+			p(l, last, versions)
+			last = l
 			continue
 		}
 
-		l := strings.Split(line, ":")
-		if len(l) > 1 {
-			kind := strings.TrimSpace(l[0])
-			value := strings.TrimSpace(l[1])
-			versions[kind] = value
+		tt := strings.Index(t, ":")
+		if tt > 0 {
+			kind := t[:tt]
+			value := strings.TrimSpace(t[tt+1:])
+			versions[kind] = newLine(path, value, lineNumber, tt+1)
 		}
 
-		last = line
+		last = l
 	}
 
 	return versions, nil
 }
+
+// func setVersion(target, value string, versions map[string]*Line) []byte {
+
+// }
 
 func prettyPrint(w io.Writer, v interface{}) (err error) {
 	b, err := json.MarshalIndent(v, "", "  ")
