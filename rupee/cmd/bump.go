@@ -6,35 +6,60 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
 
 // bumpCmd represents the bump command
 var bumpCmd = &cobra.Command{
-	Use:   "bump",
-	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
+	Use:   "bump <chart name> <version field name>=<new version>",
+	Short: "Update version value for a given fiel on Charts",
+	Args:  cobra.MinimumNArgs(2),
+	// UsageTemplate: ``,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := ensureRepository("", ""); err != nil {
+			return err
+		}
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("bump called")
+		chart := args[0]
+		versions, err := getVersionsFor("", chart)
+
+		if err != nil {
+			return err
+		}
+
+		args = args[1:]
+		for _, a := range args {
+			aa := strings.Split(a, "=")
+
+			if len(aa) < 2 {
+				continue
+			}
+
+			field := aa[0]
+			value := aa[1]
+
+			t, ok := versions[field]
+			if !ok {
+				fmt.Fprintf(cmd.ErrOrStderr(), "[ERR] could not find %s\n", field)
+				continue
+			}
+
+			var raw []byte
+			raw, err = setVersion(t, value)
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprint(cmd.OutOrStdout(), string(raw))
+		}
+
+		return nil
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(bumpCmd)
-
-	// Here you will define your flags and configuration settings.
-
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// bumpCmd.PersistentFlags().String("foo", "", "A help for foo")
-
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// bumpCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	// bumpCmd.Flags().BoolP("in-place", "i", false, "Write changes on target file")
 }

@@ -81,11 +81,11 @@ func listCharts(localDir string) ([]string, error) {
 
 type source struct {
 	file, match string
-	parse       func(*Version, *Version, map[string]*Version)
+	parse       func(*Token, *Token, map[string]*Token)
 }
 
-func newLine(source, content string, line, col int) *Version {
-	return &Version{
+func newLine(source, content string, line, col int) *Token {
+	return &Token{
 		Value:  content,
 		source: source,
 		line:   line,
@@ -93,23 +93,23 @@ func newLine(source, content string, line, col int) *Version {
 	}
 }
 
-type Version struct {
+type Token struct {
 	Value  string
 	source string
 	line   int
 	col    int
 }
 
-func (l Version) String() string {
+func (l Token) String() string {
 	return l.Value
 }
 
-func (l Version) MarshalJSON() ([]byte, error) {
+func (l Token) MarshalJSON() ([]byte, error) {
 	return json.Marshal(l.Value)
 }
 
 // find "./charts/packages/$PACKAGE" ! -name '*json*' ! -name '*.patch' -type f -exec grep -E '^\+?\s*(version|tag|appVersion|packageVersion|repository)\s*:\s*.\w+' {} \;
-func getVersionsFor(localDir, chartName string) (map[string]*Version, error) {
+func getVersionsFor(localDir, chartName string) (map[string]*Token, error) {
 	if localDir == "" {
 		localDir = rke2Local
 	}
@@ -122,12 +122,12 @@ func getVersionsFor(localDir, chartName string) (map[string]*Version, error) {
 	pkg := source{
 		file:  "package.yaml",
 		match: "^\\s*(url|packageVersion)\\s*:",
-		parse: func(current, _ *Version, versions map[string]*Version) {
+		parse: func(current, _ *Token, versions map[string]*Token) {
 			line := current.Value
 
-			i := strings.Index(line, ":") + 1
+			i := strings.Index(line, ":")
 
-			if strings.Contains(line[i:], "local") {
+			if strings.Contains(line[i+1:], "local") {
 				return
 			}
 
@@ -146,8 +146,9 @@ func getVersionsFor(localDir, chartName string) (map[string]*Version, error) {
 	values := source{
 		file:  "values.yaml",
 		match: "^\\s*tag\\s*:",
-		parse: func(tag, repository *Version, versions map[string]*Version) {
+		parse: func(tag, repository *Token, versions map[string]*Token) {
 
+			// FIXME: As it is, it does not support multiple images with the same repo. name
 			c := strings.Index(tag.Value, ":") + 1
 			l := strings.Index(repository.Value, ":") + 1
 			tag.Value = strings.TrimSpace(tag.Value[c:])
@@ -157,7 +158,7 @@ func getVersionsFor(localDir, chartName string) (map[string]*Version, error) {
 	}
 
 	alist := []source{pkg, chart, values}
-	versions := make(map[string]*Version)
+	versions := make(map[string]*Token)
 
 	filepath.Walk(chartPath, func(path string, info fs.FileInfo, err error) error {
 		if info.IsDir() && strings.Contains(path, "generated") {
@@ -180,7 +181,7 @@ func getVersionsFor(localDir, chartName string) (map[string]*Version, error) {
 	return versions, nil
 }
 
-func scanVersions(path, versionPattern string, p func(*Version, *Version, map[string]*Version), versions map[string]*Version) (map[string]*Version, error) {
+func scanVersions(path, versionPattern string, p func(*Token, *Token, map[string]*Token), versions map[string]*Token) (map[string]*Token, error) {
 
 	file, err := os.Open(path)
 	if err != nil {
@@ -195,7 +196,7 @@ func scanVersions(path, versionPattern string, p func(*Version, *Version, map[st
 	scanner := bufio.NewScanner(file)
 
 	var lineNumber int
-	var last *Version
+	var last *Token
 	for scanner.Scan() {
 		lineNumber++
 
@@ -226,9 +227,30 @@ func scanVersions(path, versionPattern string, p func(*Version, *Version, map[st
 	return versions, nil
 }
 
-// func setVersion(target, value string, versions map[string]*Line) []byte {
+func setVersion(target *Token, value string) ([]byte, error) {
+	file, err := os.Open(target.source)
+	if err != nil {
+		return nil, err
+	}
 
-// }
+	var buf bytes.Buffer
+	var lineNumber int
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		lineNumber++
+
+		if lineNumber != target.line {
+			fmt.Fprintln(&buf, scanner.Text())
+			continue
+		}
+
+		t := scanner.Text()
+		fmt.Fprintln(&buf, strings.ReplaceAll(t, target.Value, value))
+	}
+
+	return buf.Bytes(), nil
+}
 
 func prettyPrint(w io.Writer, v interface{}) (err error) {
 	b, err := json.MarshalIndent(v, "", "  ")

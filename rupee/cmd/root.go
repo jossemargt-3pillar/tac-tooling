@@ -12,7 +12,7 @@ import (
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:   "rupa",
+	Use:   "rupee",
 	Short: "rke2 upstream packaging automation",
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
