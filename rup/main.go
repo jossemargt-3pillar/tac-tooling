@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,25 +28,25 @@ const (
 
 func main() {
 	app := &cli.App{
+		Usage:     "rke2 charts updater",
+		UsageText: "rup [options] [<version field>=<version value>]",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "charts",
 				Value:   "rke2-charts",
 				Usage:   "rke2 charts directory",
+				Aliases: []string{"c"},
 				EnvVars: []string{"CHARTS"},
 			},
-			// TODO:
-			&cli.BoolFlag{
-				Name:    "debug",
-				Value:   false,
-				EnvVars: []string{"DEBUG"},
-			},
-			// TODO:
 			&cli.BoolFlag{
 				Name:    "in-place",
+				Usage:   "write changes into their respective files",
 				Aliases: []string{"i"},
-				Value:   false,
-				EnvVars: []string{"DEBUG"},
+			},
+			&cli.BoolFlag{
+				Name:    "print",
+				Usage:   "print resulting yaml file on STDOUT",
+				Aliases: []string{"p"},
 			},
 		},
 		Action: func(c *cli.Context) error {
@@ -69,24 +70,25 @@ func main() {
 				overrides[a[0]] = a[1]
 			}
 
-			matchers := make(map[string]func([]byte, map[string]string) ([]byte, error))
+			matchers := make(map[string]YAMLUpdater)
 
-			matchers[FileChart] = NewGenericUpdater([]string{"appVersion", "version"})
-			matchers[FilePackage] = NewGenericUpdater([]string{"packageVersion"})
-			matchers[FileValues] = updateImageValues
+			matchers[FileChart] = NewUpdater([]string{"appVersion", "version"})
+			matchers[FilePackage] = NewUpdater([]string{"packageVersion"})
+			matchers[FileValues] = NewImageUpdater("tag")
 
-			filepath.Walk(chartPath, func(path string, info fs.FileInfo, err error) error {
-				if info.IsDir() && strings.Contains(path, "generated") {
-					return filepath.SkipDir
+			err := filepath.Walk(chartPath, func(path string, info fs.FileInfo, err error) error {
+				if err != nil {
+					return err
 				}
 
 				if info.IsDir() {
+					if strings.Contains(path, "generated") {
+						return filepath.SkipDir
+					}
 					return nil
 				}
 
-				var content []byte
-
-				if fn, ok := matchers[filepath.Base(path)]; ok {
+				if u, ok := matchers[filepath.Base(path)]; ok {
 					f, err := os.Open(path)
 					if err != nil {
 						return err
@@ -97,14 +99,28 @@ func main() {
 					if _, err := io.Copy(&b, f); err != nil {
 						return err
 					}
-					content, _ = fn(b.Bytes(), overrides)
 
-					fmt.Print(string(content))
+					u.Load(b.Bytes())
+					u.Update(overrides)
+
+					if !(c.Bool("print") || c.Bool("in-place")) {
+						fmt.Print(u)
+					}
+
+					if c.Bool("print") {
+						fmt.Print(chartutil.ToYaml(u))
+					}
+
+					if c.Bool("in-place") && u.HasChanged() {
+						if err := os.WriteFile(path, []byte(chartutil.ToYaml(u)), info.Mode()); err != nil {
+							return err
+						}
+					}
 				}
 				return nil
 			})
 
-			return nil
+			return err
 		},
 	}
 
@@ -114,55 +130,146 @@ func main() {
 	}
 }
 
-func NewGenericUpdater(targets []string) func([]byte, map[string]string) ([]byte, error) {
-	return func(raw []byte, overrides map[string]string) ([]byte, error) {
-		values, err := chartutil.ReadValues(raw)
-		if err != nil {
-			return nil, err
-		}
+type YAMLUpdater interface {
+	Load([]byte) error
+	Update(map[string]string)
+	HasChanged() bool
+}
 
-		m := values.AsMap()
-		for _, t := range targets {
-			if v, ok := overrides[t]; ok {
-				m[t] = v
+func NewUpdater(targets []string) YAMLUpdater {
+	m := make(map[string]interface{})
+
+	return &VersionTree{
+		targets:  targets,
+		yaml:     nil,
+		Versions: m,
+	}
+}
+
+func NewImageUpdater(target string) YAMLUpdater {
+	v := make(map[string]interface{})
+	r := make(map[string][]map[string]interface{})
+
+	return &VersionTreeR{
+		target:            target,
+		yaml:              nil,
+		Versions:          v,
+		versionReferences: r,
+	}
+}
+
+type VersionTree struct {
+	yaml     chartutil.Values
+	targets  []string
+	modified bool
+	Versions map[string]interface{}
+}
+
+func (v *VersionTree) Load(b []byte) error {
+	values, err := chartutil.ReadValues(b)
+	if err != nil {
+		return err
+	}
+
+	v.yaml = values
+	for _, t := range v.targets {
+		if val, ok := values[t]; ok {
+			v.Versions[t] = val
+		}
+	}
+
+	return nil
+}
+
+func (v *VersionTree) Update(overrides map[string]string) {
+	m := v.yaml.AsMap()
+	for _, t := range v.targets {
+		if val, ok := overrides[t]; ok {
+			v.modified = true
+			m[t] = val
+			v.Versions[t] = val
+		}
+	}
+}
+
+func (v *VersionTree) HasChanged() bool {
+	return v.modified
+}
+
+func (v *VersionTree) MarshalJSON() ([]byte, error) {
+	return json.Marshal(v.yaml)
+}
+
+func (v *VersionTree) String() string {
+	return chartutil.ToYaml(v.Versions)
+}
+
+type VersionTreeR struct {
+	yaml              chartutil.Values
+	target            string
+	Versions          map[string]interface{}
+	versionReferences map[string][]map[string]interface{}
+	modified          bool
+}
+
+func (vr *VersionTreeR) Load(b []byte) error {
+	values, err := chartutil.ReadValues(b)
+	if err != nil {
+		return err
+	}
+
+	vr.yaml = values
+	targetLookup(vr.target, values.AsMap(), vr.versionReferences)
+
+	for k, v := range vr.versionReferences {
+		vr.Versions[k] = v[0][vr.target]
+	}
+
+	return nil
+}
+
+func (vr *VersionTreeR) Update(overrides map[string]string) {
+	for k, _ := range vr.versionReferences {
+		if val, ok := overrides[k]; ok {
+			vr.modified = true
+			vr.Versions[k] = val
+			for _, ref := range vr.versionReferences[k] {
+				ref[vr.target] = val
 			}
 		}
-
-		return []byte(chartutil.ToYaml(values)), nil
 	}
 }
 
-func updateImageValues(raw []byte, overrides map[string]string) ([]byte, error) {
-	values, err := chartutil.ReadValues(raw)
-	if err != nil {
-		return nil, err
-	}
-
-	m := values.AsMap()
-	imageLookup(m, overrides)
-
-	return []byte(chartutil.ToYaml(values)), nil
+func (vr *VersionTreeR) HasChanged() bool {
+	return vr.modified
 }
 
-func imageLookup(tree map[string]interface{}, overrides map[string]string) {
-	if _, found := tree["tag"]; !found {
+func (vr *VersionTreeR) MarshalJSON() ([]byte, error) {
+	return json.Marshal(vr.yaml)
+}
+
+func (vr *VersionTreeR) String() string {
+	return chartutil.ToYaml(vr.Versions)
+}
+
+func targetLookup(target string, tree map[string]interface{}, dictionary map[string][]map[string]interface{}) {
+	if _, found := tree[target]; !found {
 		for _, v := range tree {
 			if vv, ok := v.(map[string]interface{}); ok {
-				imageLookup(vv, overrides)
+				targetLookup(target, vv, dictionary)
 			}
 		}
 		return
 	}
 
-	var imageName string
+	var relative string
 	for k, v := range tree {
-		if k == "tag" {
+		if k == target {
 			continue
 		}
-		imageName = v.(string)
+		relative = v.(string)
 	}
 
-	if v, ok := overrides[imageName]; ok {
-		tree["tag"] = v
-	}
+	l := dictionary[relative]
+	dictionary[relative] = append(l, tree)
 }
