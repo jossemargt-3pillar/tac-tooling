@@ -5,4 +5,4 @@ trigger: default
 
 keywords:
   - name: gen-test-ticket
-    value: '^\/(colaborate-with|test-for)(.+)'
+    value: '^\/test-for (.+)$'
