@@ -11,13 +11,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: hmarr/debug-action@v2
       - name: Handle with Comvent
         uses: rytswd/comvent@v0.3
         id: comvent
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-path: .github/comvent-chatbot.yaml
+
+      - uses: hmarr/debug-action@v2
 
       - if: steps.comvent.outputs.gen-test-ticket != ''
         name: Handle comment
