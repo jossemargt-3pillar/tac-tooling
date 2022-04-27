@@ -5,10 +5,12 @@ on:
       - created
 
 jobs:
-  comment-bot:
+  parse:
     if: ${{ github.event.issue.number == 1 }}
-    name: Respond to test contributions
+    name: Check for chatbot commands
     runs-on: ubuntu-latest
+    outputs:
+      command-echo: ${{ steps.comvent.outputs.gen-test-ticket }}
 
     steps:
       - name: Handle with Comvent
@@ -18,19 +20,23 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-path: .github/comvent-chatbot.yaml
 
-      - uses: hmarr/debug-action@v2
-
-      - if: steps.comvent.outputs.gen-test-ticket != ''
-        name: Handle comment
+  reply:
+    runs-on: ubuntu-latest
+    name: Respond to /test-for
+    needs: parse
+    if: always() && needs.parse.outputs.gen-test-ticket
+    steps:
+      - name: Reply and file ticket
         uses: actions/github-script@v3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const comment = `Command \`/test-for\` was triggered by the comment. ${{steps.comvent.outputs.gen-test-ticket}}`;
-
+            const comment = `Command \`/test-for\` was triggered by the comment. ${{steps.comvent.outputs.gen-test-ticket}}`
             github.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: comment
             })
+
+      - uses: hmarr/debug-action@v2
