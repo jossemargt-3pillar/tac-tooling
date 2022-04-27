@@ -10,7 +10,7 @@ jobs:
     name: Check for chatbot commands
     runs-on: ubuntu-latest
     outputs:
-      command-echo: ${{ steps.comvent.outputs.gen-test-ticket }}
+      gen-test-ticket: ${{ steps.comvent.outputs.gen-test-ticket }}
 
     steps:
       - name: Handle with Comvent
