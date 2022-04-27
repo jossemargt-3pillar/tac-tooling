@@ -8,11 +8,12 @@ on:
 jobs:
 
   comment-bot:
-    if: github.event.issue.id == '1'
+    # if: github.event.issue.id == '1'
     name: Respond to test contributions
     runs-on: ubuntu-latest
 
     steps:
+      - uses: hmarr/debug-action@v2
       - name: Handle with Comvent
         uses: rytswd/comvent@v0.3
         id: comvent
