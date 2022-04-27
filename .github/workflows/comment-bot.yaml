@@ -8,7 +8,7 @@ on:
 jobs:
 
   comment-bot:
-    # if: github.event.issue.id == '1'
+    if: github.event.comment.issue.id == '1'
     name: Respond to test contributions
     runs-on: ubuntu-latest
 
@@ -28,7 +28,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           # An example of responding to a comment.
           script: |
-            const comment = `Command \`/test-for\` was triggered by the comment`;
+            const comment = `Command \`/test-for\` was triggered by the comment. ${{steps.comvent.outputs.gen-test-ticket}}`;
 
             github.issues.createComment({
               issue_number: context.issue.number,
