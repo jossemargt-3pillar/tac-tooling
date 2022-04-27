@@ -8,7 +8,7 @@ on:
 jobs:
 
   comment-bot:
-    if: github.event.comment.issue.id == '1'
+    if: github.event.comment.issue.id == 1
     name: Respond to test contributions
     runs-on: ubuntu-latest
 
