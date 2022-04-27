@@ -1,0 +1,37 @@
+name: comment-bot
+on:
+  issue_comment:
+    types:
+      - created
+      - edited
+
+jobs:
+
+  comment-bot:
+    if: github.event.issue.id == '1'
+    name: Respond to test contributions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Handle with Comvent
+        uses: rytswd/comvent@v0.3
+        id: comvent
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-path: .github/comvent-chatbot.yaml
+
+      - if: steps.comvent.outputs.gen-test-ticket != ''
+        name: Handle comment
+        uses: actions/github-script@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # An example of responding to a comment.
+          script: |
+            const comment = `Command \`/test-for\` was triggered by the comment`;
+
+            github.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            })
